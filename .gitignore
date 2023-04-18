@@ -1,0 +1,5 @@
+/target
+*.txt
+slurm*
+*.bcf
+*.tsv

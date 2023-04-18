@@ -1,0 +1,23 @@
+[package]
+name = "infochallenge"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+noodles-bgzf = { version = "0.20.0", features = ["libdeflate"]}
+noodles-bcf = { version = "0.23.0", features = ["async"]}
+noodles = { version = "0.35.0", features = ["vcf", "bcf", "csi", "core"] }
+rayon = "1.7.0"
+itertools = "0.10.5"
+polars = { version = "0.28.0", features = ["performant", "simd", "dtype-i8", "abs"] }
+clap = "4.2.1"
+tokio = {version = "1.27.0", features = ["full"]}
+futures = "0.3.28"
+sync_file = "0.2.6"
+
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
