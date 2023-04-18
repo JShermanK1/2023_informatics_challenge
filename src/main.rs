@@ -1,13 +1,16 @@
+use futures::{TryStreamExt, future};
 use noodles::{
     bcf::{self, header::StringMaps},
-    vcf::Header
+    vcf::Header, csi::Index
 };
 use polars::prelude::*;
 use std::{
     error::Error,
-    fs::File,
     iter::repeat,
     path::PathBuf,
+};
+use tokio::{
+    fs::File,
 };
 use itertools::Itertools;
 use noodles::csi;
@@ -17,8 +20,6 @@ use clap::{
     arg, 
     value_parser
 };
-use sync_file::SyncFile;
-
 
 
 fn cli() -> Command {
@@ -31,36 +32,92 @@ fn cli() -> Command {
             ])
 }
 
+async fn parse_header(in_path: &PathBuf) -> Result<(usize, StringMaps, Header), Box<dyn Error>> {
 
-fn main() -> Result<(), Box<dyn Error>> {
+    let mut bcf_r = File::open(in_path).await.map(bcf::AsyncReader::new)?;
+
+    bcf_r.read_file_format().await?;
+    let r_header = bcf_r.read_header().await?;
+    let header = r_header.parse()?;
+    let stringmaps = r_header.parse()?;
+
+    let mut first_record = bcf::Record::default();
+    bcf_r.read_record(&mut first_record).await.unwrap();
+    let num_samples = first_record.genotypes().len();
+
+    Ok((num_samples, stringmaps, header))
+}
+
+async fn collect_snps(chrom: &str, stringmaps: &StringMaps, num_samples: usize, index: &Index) -> Result<Vec<Vec<Option<i8>>>, Box<dyn Error>> {
+    let region = format!("{chrom}").parse().expect("failed to parse region");
+
+    let mut bcf_r = File::open("/gpfs0/scratch/mvc002/info_challenge.bcf").await.map(bcf::AsyncReader::new).expect("failed to open file");
+
+    bcf_r.read_file_format().await.expect("failed to read format");
+    let _r_header = bcf_r.read_header().await.expect("failed to read header");
+
+    let records = bcf_r.query(stringmaps.contigs(), index, &region)
+                        .expect("failed to query index");
+    
+
+    
+    //preallocate vectors to store data.
+    let mut samples: Vec<Vec<Option<i8>>> = (0..num_samples).map(|_| {
+        Vec::with_capacity(35e5 as usize) // a random guess from looking at the data
+    }).collect();
+
+    let fut = records.try_for_each(|record| {
+        //let record = record.expect("failed to read record");
+        let gt = record.genotypes().as_ref();
+        //3 header values then genotypes are pairs
+
+        //get only the GT array, drop other data
+        let record_vals = gt[3..(num_samples * 2 + 3)].chunks_exact(2)
+                                .map(|chunk| (chunk[0] + chunk[1]) as i8) //combine both alelles into one number
+                                .enumerate();
+        //optimizes out bounds checking
+        assert!(samples.len() == record_vals.len());
+        record_vals.for_each(|(i, read_value)| {
+
+                //map allels to helpfull numbers otherwise replace with None
+                let value = match read_value { 
+                    0 => None,
+                    4 => Some(0_i8),
+                    6 => Some(1_i8),
+                    8 => Some(2_i8),
+                    _ => None
+                };
+                samples[i].push(value);
+            });
+
+        future::ready(Ok(()))
+    });
+    
+    fut.await.expect("failed to read all records");
+
+    Ok(samples)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let matches = cli().get_matches();
     let in_path = matches.get_one::<PathBuf>("in").expect("error parsing input path");
     let mut index_path = in_path.clone();
     index_path.set_extension("bcf.csi");
 
+    let rt_handle = tokio::runtime::Handle::current();
 
-    let mut index_r = File::open(index_path).map(csi::Reader::new)?;
+
+    let mut index_r = std::fs::File::open(index_path).map(csi::Reader::new)?;
     let index = index_r.read_index()?;
-
-    let f = SyncFile::open(in_path)?;
 
     let num_samples;
     let stringmaps: StringMaps;
     let header: Header;
 
-    {
-        let mut bcf_r = bcf::Reader::new(f.clone());
+    let t = parse_header(in_path);
 
-        bcf_r.read_file_format()?;
-        let r_header = bcf_r.read_header()?;
-        header = r_header.parse()?;
-        stringmaps = r_header.parse()?;
-
-        let mut records = bcf_r.records().peekable();
-
-        let first_record = records.peek().unwrap().clone();
-        num_samples = first_record.as_ref().unwrap().genotypes().len();
-    }
+    (num_samples, stringmaps, header) = t.await?;
 
     let names_top = "\t".to_string() + header.sample_names()
                                             .iter()
@@ -70,58 +127,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("{names_top}");
 
     let data = (0..).map_while(|i|{
+
         stringmaps.contigs().get_index(i)
+
                         }).collect::<Vec<&str>>()
                         .into_par_iter()
-                          .map(|chrom| {
+                        .map(|chrom| {
 
-        let region = format!("{chrom}").parse().expect("failed to parse region");
+        let fut_samples = collect_snps(chrom, &stringmaps, num_samples, &index);
+        let samples;
+        {
+            samples = rt_handle.block_on(fut_samples).expect("falied to collect snps");
+        }
 
-        let mut bcf_r = bcf::Reader::new(f.clone());
-
-        bcf_r.read_file_format().expect("failed to read format");
-        let _r_header = bcf_r.read_header().expect("failed to read header");
-
-        let records = bcf_r.query(stringmaps.contigs(), &index, &region)
-                           .expect("failed to query index");
-        
-
-        
-        //preallocate vectors to store data.
-        let mut samples: Vec<Vec<Option<i8>>> = (0..num_samples).map(|_| {
-            Vec::with_capacity(35e5 as usize) // a random guess from looking at the data
-        }).collect();
-
-        records.for_each(|record| {
-            let record = record.expect("failed to read record");
-            let gt = record.genotypes().as_ref();
-            //3 header values then genotypes are pairs
-    
-            //get only the GT array, drop other data
-            let record_vals = gt[3..(num_samples * 2 + 3)].chunks_exact(2)
-                                    .map(|chunk| (chunk[0] + chunk[1]) as i8) //combine both alelles into one number
-                                    .enumerate();
-            //optimizes out bounds checking
-            assert!(samples.len() == record_vals.len());
-            record_vals.for_each(|(i, read_value)| {
-    
-                    //map allels to helpfull numbers otherwise replace with None
-                    let value = match read_value { 
-                        0 => None,
-                        4 => Some(0_i8),
-                        6 => Some(1_i8),
-                        8 => Some(2_i8),
-                        _ => None
-                    };
-                    samples[i].push(value);
-              });
-        });
-
-
-        let data = samples.into_iter()
+        let data = samples.into_par_iter()
                 .map(|sample| {
-                    let chunked = sample.into_iter().collect();
-                    chunked
+                    let sample = sample.into_iter();
+                    ChunkedArray::<Int8Type>::from_iter(sample)
                 })
                 .collect::<Vec<ChunkedArray<Int8Type>>>();
         
@@ -143,8 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     //preinitiallize matrix with 0.0 
     let mut matrix = (0_usize..num_samples).map(|_| repeat(0.0).take(num_samples).collect())
-                                            .collect::<Vec<Vec<f64>>>();
-
+                                 .collect::<Vec<Vec<f64>>>();
     
     //returns all combinations of all numbers in the sequence as tuples
     (0_usize..num_samples).tuple_combinations::<(usize, usize)>()
@@ -158,17 +179,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                             let num_compares = (data1.len() * 2) as f64;
 
                             let diff: f64 = (data1 - data2).abs().cast(&DataType::Float64).unwrap().sum().unwrap();
-
                             diff / num_compares
 
                         }).collect::<Vec<f64>>()
                         .into_iter()
                         .zip((0_usize..num_samples).tuple_combinations::<(usize, usize)>())
-                        .for_each(|(avg, (i, j))| {
+                        .for_each(|(distance, (i, j))| {
                             //store values in the matrix in both directions
-                            matrix[j][i] = avg;
-                            matrix[i][j] = avg;
-
+                            matrix[j][i] = distance;
+                            matrix[i][j] = distance;
                         });
 
     matrix.iter()
@@ -177,8 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let line = line.iter()
                            .join("\t");
             println!("{samp_name}\t{line}");
-    });
-
+        });
 
     Ok(())
 }
