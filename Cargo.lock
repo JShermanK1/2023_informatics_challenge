@@ -702,7 +702,6 @@ dependencies = [
  "futures",
  "itertools",
  "noodles",
- "noodles-bcf",
  "noodles-bgzf",
  "polars",
  "rayon",
@@ -1028,13 +1027,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4238d1e714389fc4121efa3f5422e4810de051498733573fefc02ea8ad33231"
 dependencies = [
  "byteorder",
- "futures",
  "indexmap",
  "noodles-bgzf",
  "noodles-core",
  "noodles-csi",
  "noodles-vcf",
- "tokio",
 ]
 
 [[package]]
@@ -1047,11 +1044,7 @@ dependencies = [
  "bytes",
  "crossbeam-channel",
  "flate2",
- "futures",
  "libdeflater",
- "pin-project-lite",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -1071,7 +1064,6 @@ dependencies = [
  "indexmap",
  "noodles-bgzf",
  "noodles-core",
- "tokio",
 ]
 
 [[package]]
@@ -1864,40 +1856,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.15",
-]
-
-[[package]]
-name = "tokio-util"
-version = "0.7.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5427d89453009325de0d8f342c9490009f76e999cb7672d77e46267448f7e6b2"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "pin-project-lite",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "tracing"
-version = "0.1.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ce8c33a8d48bd45d624a6e523445fd21ec13d3653cd51f681abf67418f54eb8"
-dependencies = [
- "cfg-if",
- "pin-project-lite",
- "tracing-core",
-]
-
-[[package]]
-name = "tracing-core"
-version = "0.1.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24eb03ba0eab1fd845050058ce5e616558e8f8d8fca633e6b163fe25c797213a"
-dependencies = [
- "once_cell",
 ]
 
 [[package]]
